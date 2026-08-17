@@ -1,0 +1,10 @@
+{
+  "name": "GiannaExamApk",
+  "description": "Portal Ujian Anti Nyontek - GusthyPalinPatandaApkExam dengan Kamera Pengawas, Alert Bunyi, Sync Google Spreadsheet, Generator Soal AI Gemini, Draf Otomatis, dan Laporan Hasil PDF.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

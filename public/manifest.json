@@ -1,0 +1,25 @@
+{
+  "id": "com.gusthypalinpatanda.apkexam",
+  "name": "GiannaExamApk",
+  "short_name": "GiannaExam",
+  "description": "Portal Ujian SMA Anti Nyontek - GusthyPalinPatandaApkExam",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#0f172a",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/assets/icon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/assets/icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
