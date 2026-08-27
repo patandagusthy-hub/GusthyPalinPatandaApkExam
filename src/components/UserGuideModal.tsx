@@ -227,13 +227,15 @@ export const UserGuideModal: React.FC<UserGuideModalProps> = ({
         'Pilih opsi jawaban yang benar (A, B, C, D, atau E) untuk soal pilihan ganda.',
         'Gunakan tombol **Ragu-ragu (Kuning)** jika ingin meninjau kembali jawaban nanti.',
         'Navigasi nomor soal melalui panel kisi-kisi nomor di bagian atas/bawah.',
-        '**DILARANG KERAS:**',
-        '  🚫 Membuka tab browser lain, Google, atau aplikasi chatting.',
-        '  🚫 Melakukan Screenshot / Rekam Layar.',
-        '  🚫 Menekan tombol Home / keluar dari jendela ujian.',
-        'Setiap pelanggaran akan memicu alarm suara dan tercatat langsung di komputer Pengawas!'
+        '**DILARANG KERAS (SISTEM ANTI-CURANG KIOSK AKTIF):**',
+        '  🚫 Membuka aplikasi kloning / ganda (Dual Apps / Parallel Space / Clone App).',
+        '  🚫 Menggunakan fitur Split Screen (Layar Terbelah) atau Floating Window (Jendela Mengambang).',
+        '  🚫 Membuka tab browser lain, Google, catatan PDF, AI, atau aplikasi chatting.',
+        '  🚫 Melakukan Screenshot / Tangkapan Layar / Rekam Layar.',
+        '  🚫 Menekan tombol Home / Keluar dari Mode Layar Penuh (Fullscreen).',
+        'Setiap pelanggaran akan memicu SIRINE ALARM, mengambil foto pengawas, dan pelanggaran ke-2 akan otomatis MEMBLOKIR AKUN!'
       ],
-      proTip: 'Semua jawaban otomatis tersimpan ke memori setiap kali Anda mengklik opsi, sehingga aman walau halaman ter-refresh.'
+      proTip: 'Semua jawaban otomatis tersimpan ke memori setiap detik, dan nama/NISN Anda tercetak sebagai watermark pengaman di seluruh layar.'
     },
     {
       stepNumber: 5,

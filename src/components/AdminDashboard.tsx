@@ -91,6 +91,7 @@ import {
 } from 'lucide-react';
 import { StudentShareModal } from './StudentShareModal';
 import { UserGuideModal } from './UserGuideModal';
+import { LiveScoreDuckRace } from './LiveScoreDuckRace';
 
 interface AdminDashboardProps {
   adminName: string;
@@ -1326,6 +1327,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
         return (
           <div className="space-y-6">
+            {/* Live Score Duck Racing Diagram (Balapan Bebek Real-Time) */}
+            <LiveScoreDuckRace
+              students={students}
+              results={results}
+              exams={exams}
+              classes={classes}
+              currentExamId={exams[0]?.id || 'all'}
+              onRefresh={() => {
+                setStudents(getStudents());
+                setResults(getExamResults());
+              }}
+            />
+
             {/* Metrics */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 text-white shadow">

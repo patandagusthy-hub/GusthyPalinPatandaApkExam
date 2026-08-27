@@ -17,7 +17,7 @@ import {
   sendStudentHeartbeat
 } from '../lib/storage';
 import { syncStudentExamResultToGoogleSpreadsheet } from '../lib/googleSheets';
-import { playAntiCheatAlertSound } from '../lib/audioAlert';
+import { playAntiCheatAlertSound, playAntiCheatSirenSound } from '../lib/audioAlert';
 import { downloadExamResultPDF } from '../lib/pdfGenerator';
 import { CountdownTimer } from './CountdownTimer';
 import {
@@ -38,7 +38,19 @@ import {
   Check,
   Lock,
   RefreshCw,
-  BookOpen
+  BookOpen,
+  Maximize2,
+  Minimize2,
+  Split,
+  Layers,
+  ShieldCheck,
+  AlertOctagon,
+  CopyX,
+  Smartphone,
+  Wifi,
+  WifiOff,
+  CloudOff,
+  HardDrive
 } from 'lucide-react';
 import { UserGuideModal } from './UserGuideModal';
 
@@ -76,15 +88,27 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   const [flaggedIds, setFlaggedIds] = useState<string[]>([]);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
 
-  // Auto-Save Status
+  // Auto-Save Status & Online Connectivity
+  const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [autoSaveStatus, setAutoSaveStatus] = useState<string>('Tersimpan');
   const [lastSavedTime, setLastSavedTime] = useState<string>('');
+  const [justReconnected, setJustReconnected] = useState<boolean>(false);
 
   // Anti-Cheat & Camera State
   const [violations, setViolations] = useState<StudentViolation[]>([]);
   const [showViolationModal, setShowViolationModal] = useState<boolean>(false);
   const [violationMessage, setViolationMessage] = useState<string>('');
   const [cameraSnapshots, setCameraSnapshots] = useState<string[]>([]);
+
+  // Advanced Anti-Cheat State (Split Screen, Dual App, Fullscreen, Watermark)
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [isSplitScreenDetected, setIsSplitScreenDetected] = useState<boolean>(false);
+  const [isDualAppDetected, setIsDualAppDetected] = useState<boolean>(false);
+  const [isExitFullscreenModalOpen, setIsExitFullscreenModalOpen] = useState<boolean>(false);
+  const [liveClock, setLiveClock] = useState<string>('');
+
+  const sessionIdRef = useRef<string>('');
+  const lastViolationTimeRef = useRef<number>(0);
   
   // Submit Confirmation, Final Result & Time Expired Lock
   const [showSubmitConfirmModal, setShowSubmitConfirmModal] = useState<boolean>(false);
@@ -98,6 +122,16 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+
+  // Live ticking watermark clock
+  useEffect(() => {
+    const updateClock = () => {
+      setLiveClock(new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    };
+    updateClock();
+    const interval = setInterval(updateClock, 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Initialize Camera
   const startCamera = async () => {
@@ -148,11 +182,96 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
     return '';
   }, [student.name]);
 
+  // Request Fullscreen Mode (Kiosk Mode)
+  const enterFullscreenMode = useCallback(async () => {
+    try {
+      const docEl = document.documentElement as any;
+      if (docEl.requestFullscreen) {
+        await docEl.requestFullscreen();
+      } else if (docEl.webkitRequestFullscreen) {
+        await docEl.webkitRequestFullscreen();
+      } else if (docEl.mozRequestFullScreen) {
+        await docEl.mozRequestFullScreen();
+      } else if (docEl.msRequestFullscreen) {
+        await docEl.msRequestFullscreen();
+      }
+      setIsFullscreen(true);
+      setIsExitFullscreenModalOpen(false);
+    } catch (err) {
+      console.warn('Fullscreen request rejected or not supported:', err);
+    }
+  }, []);
+
+  // Core Anti-Cheat Violation Trigger
+  const handleViolation = useCallback((reason: string, isSevere: boolean = false) => {
+    // Debounce triggers within 1.5 seconds to prevent flood
+    const now = Date.now();
+    if (now - lastViolationTimeRef.current < 1500) return;
+    lastViolationTimeRef.current = now;
+
+    if (isSevere) {
+      playAntiCheatSirenSound();
+    } else {
+      playAntiCheatAlertSound();
+    }
+
+    const snap = captureSnapshot();
+    if (snap) {
+      setCameraSnapshots((prev) => [...prev, snap].slice(-10));
+    }
+
+    const newViolation: StudentViolation = {
+      timestamp: new Date().toISOString(),
+      reason,
+      snapshotUrl: snap,
+    };
+
+    setViolations((prevViolations) => {
+      const updatedViolations = [...prevViolations, newViolation];
+      const maxAllowed = 2; // Strict 2-strike policy
+
+      // Update student record
+      const updatedStudent: Student = {
+        ...student,
+        violationsCount: updatedViolations.length,
+        violationLogs: updatedViolations,
+      };
+
+      // VIOLATION LIMIT REACHED: AUTOMATIC BLOCK & KICK OUT
+      if (updatedViolations.length >= maxAllowed) {
+        updatedStudent.isBlocked = true;
+        updatedStudent.status = 'BLOCKED';
+        saveStudent(updatedStudent);
+
+        stopCamera();
+        alert(
+          `🚫 AKUN DIBLOKIR OTOMATIS: Anda telah melakukan ${updatedViolations.length}x pelanggaran keamanan ujian (${reason}).\n\nAkun Anda telah DIBLOKIR oleh sistem keamanan pengawas. Hubungi Guru / Pengawas Ruangan untuk membuka blokir.`
+        );
+        onLogout();
+        return updatedViolations;
+      }
+
+      // STRIKE 1: WARN STUDENT
+      saveStudent(updatedStudent);
+      setViolationMessage(
+        `🚨 PERINGATAN KEAMANAN (#${updatedViolations.length} dari ${maxAllowed}): Terdeteksi ${reason}.\n\nDilarang membuka aplikasi lain, membagi layar (Split Screen), menggunakan aplikasi ganda, atau membuka floating window! Pelanggaran berikutnya akan menyebabkan akun Anda langsung DIBLOKIR.`
+      );
+      setShowViolationModal(true);
+      return updatedViolations;
+    });
+  }, [captureSnapshot, onLogout, student]);
+
   // Start Exam Session
   const handleStartExam = (exam: ExamSchedule) => {
     setActiveExam(exam);
     const nowIso = new Date().toISOString();
     setExamStartedAt(nowIso);
+
+    // Initialize session ID for Anti-Dual Apps detection
+    sessionIdRef.current = 'exam_session_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+
+    // Enter Fullscreen Mode
+    enterFullscreenMode();
 
     // Check existing draft
     const draft = getExamDraft(student.id, exam.id);
@@ -193,7 +312,333 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
     }
   };
 
-  // Periodic Auto-Save Engine (Every 30 seconds)
+  // 1. ANTI-DUAL APPS & CLONED BROWSER DETECTOR (Cross-tab & Multi-Instance Lock)
+  useEffect(() => {
+    if (!activeExam || examResult) return;
+
+    const mySessionId = sessionIdRef.current || ('ses_' + Date.now());
+    sessionIdRef.current = mySessionId;
+
+    let channel: BroadcastChannel | null = null;
+    try {
+      channel = new BroadcastChannel('cbt_exam_anti_clone_bus');
+      
+      // Broadcast current student session
+      channel.postMessage({
+        type: 'EXAM_SESSION_PING',
+        studentId: student.id,
+        nisn: student.nisn,
+        sessionId: mySessionId,
+      });
+
+      channel.onmessage = (event) => {
+        const data = event.data;
+        if (data && data.studentId === student.id && data.sessionId !== mySessionId) {
+          setIsDualAppDetected(true);
+          handleViolation('Aplikasi Ganda (Dual Apps / Clone App) atau Tab Browser Duplikat', true);
+        }
+      };
+    } catch (err) {
+      // Fallback
+    }
+
+    // Storage event listener
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === `cbt_active_session_${student.id}` && e.newValue && e.newValue !== mySessionId) {
+        setIsDualAppDetected(true);
+        handleViolation('Membuka Tab atau Aplikasi Kloning Kedua Secara Bersamaan', true);
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    localStorage.setItem(`cbt_active_session_${student.id}`, mySessionId);
+
+    return () => {
+      if (channel) channel.close();
+      window.removeEventListener('storage', handleStorageChange);
+      localStorage.removeItem(`cbt_active_session_${student.id}`);
+    };
+  }, [activeExam, examResult, student.id, student.nisn, handleViolation]);
+
+  // 2. ANTI-SPLIT SCREEN & FLOATING WINDOW DETECTOR (Layar Belah & Jendela Mengambang)
+  useEffect(() => {
+    if (!activeExam || examResult) return;
+
+    const checkSplitScreen = () => {
+      const activeEl = document.activeElement;
+      const isTyping = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
+
+      const winW = window.innerWidth;
+      const winH = window.innerHeight;
+      const scrW = window.screen.width;
+      const scrH = window.screen.height;
+      const availH = window.screen.availHeight || scrH;
+      const availW = window.screen.availWidth || scrW;
+
+      const heightRatio = winH / availH;
+      const widthRatio = winW / availW;
+
+      // Detect Mobile Split-Screen & Floating Pop-Up View
+      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || scrW <= 1024;
+
+      if (isMobile && !isTyping) {
+        // When split screen occurs on mobile (top/bottom or left/right), height or width falls significantly
+        if (heightRatio < 0.72 || widthRatio < 0.85) {
+          setIsSplitScreenDetected(true);
+          handleViolation('Fitur Split Screen (Layar Belah) atau Jendela Mengambang (Floating Window)', true);
+          return;
+        }
+      }
+
+      setIsSplitScreenDetected(false);
+    };
+
+    checkSplitScreen();
+    window.addEventListener('resize', checkSplitScreen);
+    window.addEventListener('orientationchange', checkSplitScreen);
+
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', checkSplitScreen);
+    }
+
+    return () => {
+      window.removeEventListener('resize', checkSplitScreen);
+      window.removeEventListener('orientationchange', checkSplitScreen);
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', checkSplitScreen);
+      }
+    };
+  }, [activeExam, examResult, handleViolation]);
+
+  // 3. FULLSCREEN KIOSK MODE LISTENER (Deteksi Keluar Layar Penuh)
+  useEffect(() => {
+    if (!activeExam || examResult) return;
+
+    const handleFullscreenChange = () => {
+      const isFull = Boolean(
+        document.fullscreenElement ||
+        (document as any).webkitFullscreenElement ||
+        (document as any).mozFullScreenElement ||
+        (document as any).msFullscreenElement
+      );
+
+      setIsFullscreen(isFull);
+      if (!isFull) {
+        setIsExitFullscreenModalOpen(true);
+        handleViolation('Keluar dari Mode Layar Penuh (Fullscreen Mode)', true);
+      }
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    document.addEventListener('mozfullscreenchange', handleFullscreenChange);
+    document.addEventListener('msfullscreenchange', handleFullscreenChange);
+
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('mozfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('msfullscreenchange', handleFullscreenChange);
+    };
+  }, [activeExam, examResult, handleViolation]);
+
+  // 4. ANTI-BLUR, TAB SWITCHING & APP MINIMIZE DETECTOR
+  useEffect(() => {
+    if (!activeExam || examResult) return;
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        handleViolation('Membuka Tab Lain / Aplikasi Di-minimize / Pindah Aplikasi', true);
+      }
+    };
+
+    const handleWindowBlur = () => {
+      handleViolation('Kehilangan Fokus Layar (Membuka Notifikasi / Floating Window / Aplikasi Lain)', true);
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleWindowBlur);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleWindowBlur);
+    };
+  }, [activeExam, examResult, handleViolation]);
+
+  // 5. CLIPBOARD, SELECTION, RIGHT-CLICK & SHORTCUT BLOCKER (Active Exam Session Only)
+  useEffect(() => {
+    if (!activeExam || examResult) return;
+
+    // Prevent Right-Click and Long-Tap Context Menu
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      return false;
+    };
+
+    // Prevent Text Selection Dragging
+    const handleSelectStart = (e: Event) => {
+      const activeEl = document.activeElement;
+      const isEssayInput = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
+      if (!isEssayInput) {
+        e.preventDefault();
+        return false;
+      }
+    };
+
+    // Prevent Copy, Cut, Paste and empty clipboard if attempted
+    const handleCopy = (e: ClipboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.clipboardData) {
+        e.clipboardData.setData('text/plain', '');
+      }
+      handleViolation('Mencoba Menyalin Soal Ujian (Copy Blocked)', false);
+      return false;
+    };
+
+    const handleCut = (e: ClipboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.clipboardData) {
+        e.clipboardData.setData('text/plain', '');
+      }
+      return false;
+    };
+
+    const handlePaste = (e: ClipboardEvent) => {
+      // Prevent pasting external content into essay or anywhere
+      e.preventDefault();
+      e.stopPropagation();
+      handleViolation('Mencoba Menempelkan Teks (Paste Blocked)', false);
+      return false;
+    };
+
+    // Prevent Drag & Drop
+    const handleDragStart = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      return false;
+    };
+
+    // Intercept DevTools & Cheat Shortcuts
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+      const isCtrl = e.ctrlKey || e.metaKey;
+      const isShift = e.shiftKey;
+      const isAlt = e.altKey;
+
+      // DevTools & Inspect Element (F12, Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+Shift+C, Ctrl+U)
+      if (
+        e.key === 'F12' ||
+        (isCtrl && isShift && (key === 'i' || key === 'j' || key === 'c')) ||
+        (isCtrl && key === 'u')
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleViolation('Membuka Developer Tools / Inspect Element', true);
+        return false;
+      }
+
+      // Copy / Paste / Cut / Print / Save / Select All / New Tab shortcuts
+      if (isCtrl && ['c', 'v', 'x', 'p', 's', 'u', 'w', 'n', 't', 'a'].includes(key)) {
+        const activeEl = document.activeElement;
+        const isEssayInput = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
+        
+        // Only allow Ctrl+A within essay textareas, block everywhere else
+        if (key === 'a' && isEssayInput) {
+          return;
+        }
+
+        e.preventDefault();
+        e.stopPropagation();
+        if (['c', 'x', 'v'].includes(key)) {
+          handleViolation(`Mencoba Menggunakan Pintasan Keyboard (Ctrl+${key.toUpperCase()})`, false);
+        }
+        return false;
+      }
+
+      // Alt+Tab or Alt+F4
+      if (isAlt && (key === 'tab' || e.key === 'F4')) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleViolation('Kombinasi Tombol Alt+Tab / Pindah Aplikasi', true);
+        return false;
+      }
+
+      // PrintScreen key
+      if (e.key === 'PrintScreen') {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText('');
+        }
+        handleViolation('Mencoba Tangkapan Layar (PrintScreen / Screenshot)', true);
+      }
+    };
+
+    document.addEventListener('contextmenu', handleContextMenu, true);
+    document.addEventListener('selectstart', handleSelectStart, true);
+    document.addEventListener('copy', handleCopy, true);
+    document.addEventListener('cut', handleCut, true);
+    document.addEventListener('paste', handlePaste, true);
+    document.addEventListener('dragstart', handleDragStart, true);
+    window.addEventListener('keydown', handleGlobalKeyDown, true);
+
+    return () => {
+      document.removeEventListener('contextmenu', handleContextMenu, true);
+      document.removeEventListener('selectstart', handleSelectStart, true);
+      document.removeEventListener('copy', handleCopy, true);
+      document.removeEventListener('cut', handleCut, true);
+      document.removeEventListener('paste', handlePaste, true);
+      document.removeEventListener('dragstart', handleDragStart, true);
+      window.removeEventListener('keydown', handleGlobalKeyDown, true);
+    };
+  }, [activeExam, examResult, handleViolation]);
+
+  // Network Connectivity Listener (Online / Offline Detector & Auto-Sync)
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      setJustReconnected(true);
+
+      // Trigger immediate draft save when coming back online
+      if (activeExam && !examResult) {
+        saveExamDraft({
+          examId: activeExam.id,
+          studentId: student.id,
+          multipleChoiceAnswers: mcAnswers,
+          essayAnswers: essayAnswers,
+          flaggedQuestionIds: flaggedIds,
+          questionOrderIds: orderedQuestions.map((q) => q.id),
+          optionsOrderMap: optionsMap,
+          currentQuestionIndex: currentIndex,
+          updatedAt: new Date().toISOString(),
+        });
+        const timeStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+        setLastSavedTime(timeStr);
+        setAutoSaveStatus('Tersimpan');
+      }
+
+      const timer = setTimeout(() => {
+        setJustReconnected(false);
+      }, 5000);
+      return () => clearTimeout(timer);
+    };
+
+    const handleOffline = () => {
+      setIsOnline(false);
+      setAutoSaveStatus('Tersimpan Lokal');
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [activeExam, examResult, student.id, mcAnswers, essayAnswers, flaggedIds, orderedQuestions, optionsMap, currentIndex]);
+
+  // Periodic Auto-Save Engine (Saves to localStorage draft every 30 seconds or on state change)
   useEffect(() => {
     if (!activeExam || examResult) return;
 
@@ -213,7 +658,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
 
       const timeStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
       setLastSavedTime(timeStr);
-      setAutoSaveStatus('Tersimpan');
+      setAutoSaveStatus(navigator.onLine ? 'Tersimpan' : 'Tersimpan Lokal');
     };
 
     performSave();
@@ -257,74 +702,9 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
     return () => clearInterval(timer);
   }, [activeExam, captureSnapshot, examResult]);
 
-  // Anti-Cheat Window Blur & Tab Switching Listener
-  useEffect(() => {
-    if (!activeExam || examResult) return;
-
-    const handleViolation = (reason: string) => {
-      playAntiCheatAlertSound();
-
-      const snap = captureSnapshot();
-      if (snap) {
-        setCameraSnapshots((prev) => [...prev, snap].slice(-10));
-      }
-
-      const newViolation: StudentViolation = {
-        timestamp: new Date().toISOString(),
-        reason,
-        snapshotUrl: snap,
-      };
-
-      const updatedViolations = [...violations, newViolation];
-      setViolations(updatedViolations);
-
-      // Update student record
-      const updatedStudent: Student = {
-        ...student,
-        violationsCount: updatedViolations.length,
-        violationLogs: updatedViolations,
-      };
-
-      // VIOLATION 2: LOG OUT & BLOCK ACCOUNT!
-      if (updatedViolations.length >= 2) {
-        updatedStudent.isBlocked = true;
-        updatedStudent.status = 'BLOCKED';
-        saveStudent(updatedStudent);
-
-        stopCamera();
-        alert('PERINGATAN DIBLOKIR: Anda telah melakukan 2x pelanggaran (pindah tab/layar). Akun Anda otomatis DIBLOKIR oleh sistem anti-nyontek.');
-        onLogout();
-        return;
-      }
-
-      // VIOLATION 1: WARN STUDENT
-      saveStudent(updatedStudent);
-      setViolationMessage(`PERINGATAN ANTI-NYONTEK (#${updatedViolations.length}): Terdeteksi ${reason}. Jangan meninggalkan atau membagi layar ujian! Pelanggaran kedua akan menyebabkan akun DIBLOKIR.`);
-      setShowViolationModal(true);
-    };
-
-    const handleVisibilityChange = () => {
-      if (document.hidden) {
-        handleViolation('Membuka Tab Lain / Browser Di-minimize');
-      }
-    };
-
-    const handleWindowBlur = () => {
-      handleViolation('Membagi Layar / Pindah Fokus Aplikasi (Multitasking)');
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('blur', handleWindowBlur);
-
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('blur', handleWindowBlur);
-    };
-  }, [activeExam, violations, student, captureSnapshot, onLogout, examResult]);
-
   // Keyboard Shortcuts (Arrow keys, 1-5, R/F)
   useEffect(() => {
-    if (!activeExam || examResult || showSubmitConfirmModal || showViolationModal) return;
+    if (!activeExam || examResult || showSubmitConfirmModal || showViolationModal || isSplitScreenDetected || isExitFullscreenModalOpen || isDualAppDetected) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
       // Ignore shortcuts if student is typing inside an input or textarea
@@ -363,7 +743,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeExam, orderedQuestions, currentIndex, optionsMap, examResult, showSubmitConfirmModal, showViolationModal]);
+  }, [activeExam, orderedQuestions, currentIndex, optionsMap, examResult, showSubmitConfirmModal, showViolationModal, isSplitScreenDetected, isExitFullscreenModalOpen, isDualAppDetected]);
 
   const toggleFlag = (qId: string) => {
     setFlaggedIds((prev) =>
@@ -403,7 +783,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
           wrongCount++;
         }
       } else {
-        // Essay questions (Assigned full score for completion or pending teacher manual grading)
+        // Essay questions
         const essayText = essayAnswers[q.id]?.trim();
         if (essayText) {
           totalScoredPoints += q.points || 10;
@@ -525,6 +905,23 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
             </div>
           </div>
 
+          {/* Violations Summary */}
+          {examResult.antiCheatViolations && examResult.antiCheatViolations.length > 0 && (
+            <div className="p-4 rounded-2xl bg-rose-950/40 border border-rose-800/40 text-left text-xs text-rose-300 space-y-1">
+              <div className="font-bold flex items-center gap-1.5 text-rose-400">
+                <ShieldAlert className="w-4 h-4" />
+                Catatan Pelanggaran Pengawas:
+              </div>
+              <ul className="list-disc pl-5 space-y-1 text-[11px] text-slate-300">
+                {examResult.antiCheatViolations.map((v, i) => (
+                  <li key={i}>
+                    {new Date(v.timestamp).toLocaleTimeString('id-ID')} — {v.reason}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {/* Actions */}
           <div className="pt-4 flex flex-col sm:flex-row items-center justify-center gap-3">
             <button
@@ -557,10 +954,20 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
     const unansweredCount = orderedQuestions.length - answeredCount;
 
     return (
-      <div className="min-h-screen bg-slate-950 text-white flex flex-col">
+      <div className="min-h-screen bg-slate-950 text-white flex flex-col exam-anti-cheat-protect relative select-none">
         {/* Hidden Canvas & Video for Proctoring */}
         <video ref={videoRef} autoPlay playsInline muted className="hidden" />
         <canvas ref={canvasRef} className="hidden" />
+
+        {/* DYNAMIC SECURITY WATERMARK OVERLAY (Prevents external camera/photo cheating) */}
+        <div className="fixed inset-0 pointer-events-none z-20 overflow-hidden opacity-4 flex flex-col justify-around text-slate-200 select-none font-mono text-[11px] rotate-[-12deg] scale-125">
+          {[...Array(6)].map((_, r) => (
+            <div key={r} className="whitespace-nowrap tracking-widest flex justify-around">
+              <span>{student.name} • NISN: {student.nisn} • {student.className} • {settings.schoolName || 'SMPN 1 RANTE BUA'} • {liveClock}</span>
+              <span>{student.name} • NISN: {student.nisn} • {student.className} • {settings.schoolName || 'SMPN 1 RANTE BUA'} • {liveClock}</span>
+            </div>
+          ))}
+        </div>
 
         {/* Top Exam Header */}
         <header className="sticky top-0 z-30 bg-slate-900 border-b border-slate-800 px-4 py-3 shadow-md">
@@ -570,31 +977,97 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 {activeExam.title}
               </h2>
               <p className="text-[10px] text-slate-400">
-                Mapel: {activeExam.subject} • Kelas: {student.className}
+                Mapel: {activeExam.subject} • Kelas: {student.className} • Peserta: <strong className="text-slate-200">{student.name}</strong>
               </p>
             </div>
 
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 sm:gap-3">
               {/* Live Camera Proctor Status */}
               {activeExam.cameraProctoring && (
                 <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold">
                   <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
                   <Camera className="w-3.5 h-3.5" />
-                  <span>Kamera Guard Active</span>
+                  <span>Kamera Aktif</span>
                 </div>
               )}
 
-              {/* Auto Save Badge */}
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-800 border border-slate-700 text-[11px] text-slate-300">
-                <Save className="w-3 h-3 text-sky-400" />
-                <span>{autoSaveStatus} {lastSavedTime && `(${lastSavedTime})`}</span>
-              </div>
+              {/* Fullscreen indicator */}
+              <button
+                type="button"
+                onClick={enterFullscreenMode}
+                className="hidden sm:flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[11px] text-slate-300 transition-colors"
+                title="Aktifkan Layar Penuh"
+              >
+                <Maximize2 className="w-3 h-3 text-emerald-400" />
+                <span>Fullscreen</span>
+              </button>
+
+              {/* Auto Save Badge & Offline Connectivity Indicator */}
+              {!isOnline ? (
+                <div
+                  className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/20 border-2 border-amber-400 text-amber-300 text-[11px] font-black animate-pulse shadow-lg shadow-amber-500/20 cursor-default"
+                  title="Perangkat sedang offline. Fitur Auto-Save Lokal aktif menyimpan semua jawaban Anda di memori browser ini."
+                >
+                  <WifiOff className="w-3.5 h-3.5 text-amber-400 animate-bounce" />
+                  <span className="tracking-tight">Auto-Save: Offline (Lokal Aktif)</span>
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
+                </div>
+              ) : justReconnected ? (
+                <div
+                  className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/20 border border-emerald-500 text-emerald-300 text-[11px] font-bold animate-fade-in"
+                  title="Koneksi internet telah pulih. Seluruh data jawaban berhasil disinkronkan."
+                >
+                  <Wifi className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Online • Tersinkronisasi</span>
+                </div>
+              ) : (
+                <div
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-800 border border-slate-700 text-[11px] text-slate-300"
+                  title="Sistem Auto-Save aktif menyimpan setiap jawaban secara otomatis ke memori lokal & server."
+                >
+                  {autoSaveStatus === 'Menyimpan...' ? (
+                    <RefreshCw className="w-3 h-3 text-sky-400 animate-spin" />
+                  ) : (
+                    <Save className="w-3 h-3 text-emerald-400" />
+                  )}
+                  <span>Auto-Save: {autoSaveStatus} {lastSavedTime && `(${lastSavedTime})`}</span>
+                </div>
+              )}
             </div>
           </div>
         </header>
 
+        {/* OFFLINE AUTO-SAVE WARNING BANNER (Sticky warning when network is disconnected) */}
+        {!isOnline && (
+          <div className="bg-amber-500/20 border-b border-amber-500/40 px-4 py-2.5 shadow-lg backdrop-blur-sm sticky top-[57px] z-20 animate-pulse">
+            <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 text-xs text-amber-200">
+              <div className="flex items-center gap-2.5">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 animate-bounce" />
+                <div>
+                  <span className="font-bold text-amber-300">⚠️ Koneksi Internet Terputus (Mode Offline):</span>{' '}
+                  <span>Jangan panik! Seluruh jawaban Anda tetap <strong>tersimpan aman secara otomatis di memori browser ini (Auto-Save Lokal)</strong> hingga koneksi internet kembali normal.</span>
+                </div>
+              </div>
+              <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-400/20 text-amber-300 text-[10px] font-black border border-amber-400/30 uppercase tracking-wider shrink-0">
+                <HardDrive className="w-3.5 h-3.5" />
+                <span>Auto-Save Lokal Aktif</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* RECONNECTED AUTO-SYNC BANNER */}
+        {isOnline && justReconnected && (
+          <div className="bg-emerald-500/20 border-b border-emerald-500/40 px-4 py-2 shadow-md backdrop-blur-sm sticky top-[57px] z-20 animate-fade-in">
+            <div className="max-w-7xl mx-auto flex items-center justify-center gap-2 text-xs text-emerald-200 font-semibold">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span><strong>Koneksi Internet Pulih:</strong> Seluruh draft jawaban tersimpan telah berhasil disinkronkan kembali ke server secara otomatis!</span>
+            </div>
+          </div>
+        )}
+
         {/* Main Content Layout */}
-        <div className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
+        <div className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-4 gap-6 relative z-10">
           
           {/* Left Column: Question Area */}
           <div className="lg:col-span-3 space-y-6">
@@ -628,7 +1101,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 </div>
 
                 {/* Question Text */}
-                <div className="text-sm sm:text-base leading-relaxed text-slate-100 font-medium">
+                <div className="text-sm sm:text-base leading-relaxed text-slate-100 font-medium select-none">
                   {currentQ.questionText}
                 </div>
 
@@ -783,7 +1256,85 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
 
         </div>
 
-        {/* SUBMIT CONFIRMATION MODAL */}
+        {/* 1. SPLIT SCREEN & FLOATING WINDOW FULL BLOCKER MODAL */}
+        {isSplitScreenDetected && (
+          <div className="fixed inset-0 z-50 bg-rose-950/98 backdrop-blur-xl flex flex-col items-center justify-center p-6 text-center text-white animate-fade-in select-none">
+            <div className="w-20 h-20 rounded-3xl bg-rose-600/30 text-rose-400 border-2 border-rose-500 flex items-center justify-center mb-5 animate-bounce shadow-2xl shadow-rose-600/50">
+              <Split className="w-10 h-10 text-rose-400" />
+            </div>
+            <h3 className="text-2xl sm:text-3xl font-black text-rose-200 tracking-wide">
+              🚫 TERDETEKSI SPLIT SCREEN / FLOATING WINDOW!
+            </h3>
+            <p className="text-xs sm:text-sm text-slate-200 max-w-md mt-3 leading-relaxed">
+              Sistem keamanan mendeteksi ukuran layar terbagi dengan aplikasi lain (catatan/browser) atau jendela mengambang aktif. 
+              <br /><br />
+              <strong className="text-amber-300">Tindakan ini tercatat sebagai pelanggaran anti-curang.</strong> Harap tutup aplikasi lain dan kembalikan layar ujian ke <strong>100% Layar Penuh</strong> untuk melanjutkan.
+            </p>
+
+            <div className="mt-6 flex flex-col sm:flex-row items-center gap-3">
+              <button
+                type="button"
+                onClick={enterFullscreenMode}
+                className="px-6 py-3 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs shadow-xl flex items-center gap-2 transition-all"
+              >
+                <Maximize2 className="w-4 h-4" />
+                <span>Kembalikan ke Layar Penuh (100%)</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 2. DUAL APPS / CLONED INSTANCE FULL BLOCKER MODAL */}
+        {isDualAppDetected && (
+          <div className="fixed inset-0 z-50 bg-rose-950/98 backdrop-blur-xl flex flex-col items-center justify-center p-6 text-center text-white animate-fade-in select-none">
+            <div className="w-20 h-20 rounded-3xl bg-rose-600/30 text-rose-400 border-2 border-rose-500 flex items-center justify-center mb-5 animate-bounce shadow-2xl shadow-rose-600/50">
+              <Layers className="w-10 h-10 text-rose-400" />
+            </div>
+            <h3 className="text-2xl sm:text-3xl font-black text-rose-200 tracking-wide">
+              🚫 TERDETEKSI APLIKASI GANDA (DUAL APPS)!
+            </h3>
+            <p className="text-xs sm:text-sm text-slate-200 max-w-md mt-3 leading-relaxed">
+              Terdeteksi ada dua jendela atau aplikasi kloning (Dual Apps / Parallel Space / Tab Kedua) yang dibuka dengan akun Anda.
+              <br /><br />
+              Sistem ujian hanya mengizinkan <strong>1 sesi tunggal</strong>. Tutup aplikasi kloning atau tab lain segera!
+            </p>
+
+            <button
+              type="button"
+              onClick={() => setIsDualAppDetected(false)}
+              className="mt-6 px-6 py-3 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs shadow-xl flex items-center gap-2 transition-all"
+            >
+              <ShieldCheck className="w-4 h-4" />
+              <span>Tutup & Gunakan Tab Utama</span>
+            </button>
+          </div>
+        )}
+
+        {/* 3. EXIT FULLSCREEN ENFORCEMENT MODAL */}
+        {isExitFullscreenModalOpen && !isSplitScreenDetected && (
+          <div className="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center text-white animate-fade-in select-none">
+            <div className="w-18 h-18 p-4 rounded-3xl bg-amber-500/20 text-amber-400 border border-amber-500/40 flex items-center justify-center mb-4 animate-pulse">
+              <Maximize2 className="w-10 h-10" />
+            </div>
+            <h3 className="text-xl sm:text-2xl font-black text-amber-300">
+              ⚠️ WAJIB MODE LAYAR PENUH (FULLSCREEN)
+            </h3>
+            <p className="text-xs sm:text-sm text-slate-300 max-w-md mt-2 leading-relaxed">
+              Anda keluar dari mode layar penuh. Untuk menjaga integritas ujian, soal disembunyikan sampai Anda masuk kembali ke mode layar penuh.
+            </p>
+
+            <button
+              type="button"
+              onClick={enterFullscreenMode}
+              className="mt-5 px-6 py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs shadow-lg flex items-center gap-2 transition-all"
+            >
+              <Maximize2 className="w-4 h-4" />
+              <span>Masuk Kembali ke Layar Penuh</span>
+            </button>
+          </div>
+        )}
+
+        {/* 4. SUBMIT CONFIRMATION MODAL */}
         {showSubmitConfirmModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
             <div className="relative w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl p-6 text-white space-y-5">
@@ -842,7 +1393,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
           </div>
         )}
 
-        {/* VIOLATION WARNING MODAL */}
+        {/* 5. VIOLATION WARNING MODAL */}
         {showViolationModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-md animate-fade-in">
             <div className="relative w-full max-w-md bg-rose-950 border-2 border-rose-500 rounded-3xl p-6 text-white space-y-4 shadow-2xl animate-shake">
@@ -851,12 +1402,17 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 <span>PERINGATAN ANTI-NYONTEK!</span>
               </div>
 
-              <div className="p-4 rounded-2xl bg-black/40 border border-rose-500/40 text-xs text-rose-200 leading-relaxed font-medium">
+              <div className="p-4 rounded-2xl bg-black/40 border border-rose-500/40 text-xs text-rose-200 leading-relaxed font-medium whitespace-pre-line">
                 {violationMessage}
               </div>
 
-              <div className="text-[11px] text-slate-300">
-                Sistem merekam timestamp serta foto kamera pengawas setiap kali terjadi aktivitas multitasking.
+              <div className="p-3 rounded-xl bg-rose-900/40 border border-rose-700/50 flex items-center justify-between text-xs text-slate-300">
+                <span>Total Pelanggaran Anda:</span>
+                <span className="font-mono font-black text-rose-300 text-sm">{violations.length} / 2 (Batas Maksimal)</span>
+              </div>
+
+              <div className="text-[11px] text-slate-400">
+                Sistem merekam timestamp serta foto kamera pengawas setiap kali terjadi aktivitas multitasking atau pemisahan layar.
               </div>
 
               <div className="flex justify-end pt-2">
@@ -871,7 +1427,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
           </div>
         )}
 
-        {/* TIME EXPIRED & LOCK OVERLAY MODAL */}
+        {/* 6. TIME EXPIRED & LOCK OVERLAY MODAL */}
         {isTimeExpiredModalOpen && (
           <div className="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center text-white animate-fade-in select-none">
             <div className="w-20 h-20 rounded-3xl bg-rose-500/20 text-rose-400 border border-rose-500/40 flex items-center justify-center mb-5 animate-pulse shadow-2xl shadow-rose-500/20">
@@ -912,7 +1468,14 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {!isOnline && (
+            <div className="px-3 py-1.5 rounded-xl bg-amber-500/20 text-amber-300 border border-amber-500/40 text-xs font-bold flex items-center gap-1.5 animate-pulse">
+              <WifiOff className="w-3.5 h-3.5 text-amber-400" />
+              <span>Mode Offline (Auto-Save Lokal Aktif)</span>
+            </div>
+          )}
+
           <button
             onClick={() => setShowStudentGuide(true)}
             className="px-3.5 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm"
@@ -928,6 +1491,17 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
             <LogOut className="w-4 h-4" />
             <span>Keluar Portal</span>
           </button>
+        </div>
+      </div>
+
+      {/* Security Status Card */}
+      <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 flex items-start gap-3 text-xs text-slate-300">
+        <ShieldCheck className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+        <div>
+          <span className="font-bold text-white block mb-0.5">Sistem Keamanan Ujian Terintegrasi (Kiosk Anti-Nyontek Aktif):</span>
+          <p className="text-slate-400 text-[11px] leading-relaxed">
+            Aplikasi mendeteksi dan melarang penggunaan <strong>Dual Apps (Kloning Aplikasi)</strong>, <strong>Split Screen (Layar Belah)</strong>, <strong>Floating Window</strong>, perpindahan tab, tangkapan layar, dan salin-tempel jawaban. Pelanggaran 2x akan otomatis memblokir akun Anda.
+          </p>
         </div>
       </div>
 
